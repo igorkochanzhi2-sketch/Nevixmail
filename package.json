@@ -1,0 +1,16 @@
+{
+  "name": "nevix-mail",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NEVIX MAIL: адреса @nevixmail.com, вход по адресу и паролю, письма внутри Nevix",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "pg": "^8.11.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
