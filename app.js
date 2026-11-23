@@ -19,9 +19,6 @@ const S = {
   forgot: {},
   rcode: '',
   delForm: false
-  forgot: {},
-  rcode: '',
-  delForm: false
 };
 const $ = (s) => document.querySelector(s);
 const app = $('#app');
