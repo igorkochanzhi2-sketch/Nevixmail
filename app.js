@@ -15,7 +15,10 @@ const S = {
   theme: localStorage.getItem('nevixmail.theme') === 'light' ? 'light' : 'dark',
   from: null,      // письмо, из которого сделали «Переслать»
   blocks: [],
-  pwForm: false,
+    pwForm: false,
+  forgot: {},
+  rcode: '',
+  delForm: false
   forgot: {},
   rcode: '',
   delForm: false
