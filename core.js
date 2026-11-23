@@ -341,8 +341,8 @@ async function tryRoute(req, res, url) {
     const byPass = !!me.pass && !!pass && cp(pass, me.pass);
     const byCode = !!me.rcode && !!code && rcnorm(me.rcode) === code;
     if (!byPass && !byCode) { js(res, 403, { error: 'Введите пароль или код восстановления' }); return true; }
-    const q = (sql) => getPool().query(sql, [me.id, me.handle]);
-    await q('delete from nx_mail_letters where from_h = $2 or to_h = $2');
+        const q = (sql, a) => getPool().query(sql, a || [me.id]);
+    await q('delete from nx_mail_letters where from_h = $1 or to_h = $1', [me.handle]);
     await q('delete from nx_mail_flags where user_id = $1');
     await q('delete from nx_mail_reads where user_id = $1');
     await q('delete from nx_mail_drafts where user_id = $1');
