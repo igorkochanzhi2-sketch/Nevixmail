@@ -3,8 +3,6 @@
    удаление аккаунта, код восстановления, даты в списке и обновление.
    Ничего не переписывает — только дополняет уже работающее. */
 (function () {
-  if (!window.__MAIL__) return;
-
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const tok = () => localStorage.getItem('nevixmail.token') || '';
   const app = document.getElementById('app');
