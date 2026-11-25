@@ -438,4 +438,166 @@ async function tryRoute(req, res, url) {
     if (!code) { js(res, 400, { error: 'Напишите код восстановления' }); return true; }
     if (pass.length < 6) { js(res, 400, { error: 'Новый пароль от 6 символов' }); return true; }
     const r = await getPool().query('select * from nx_mail_users where handle = $1', [handle]);
-    const u 
+    const u async function blocksOf(userId) {
+  const r = await getPool().query('select addr from nx_mail_blocks where user_id = $1 order by addr', [userId]);
+  return r.rows.map((x) => x.addr);
+}
+
+async function tryRoute(req, res, url) {
+  const p = url.pathname;
+  if (!MINE(p)) return false;
+
+  try { await ensure(); }
+  catch (e) {
+    js(res, 500, { error: 'База не готова: ' + String(e.message || e).slice(0, 80) });
+    return true;
+  }
+
+  /* восстановление пароля по коду — работает без входа */
+  if (p === '/api/recover' && req.method === 'POST') {
+    const b = await rb(req);
+    const handle = cl(b.handle);
+    const code = rcnorm(b.code);
+    const pass = String(b.new || '');
+    if (!HRE.test(handle)) { js(res, 400, { error: 'Напишите адрес' }); return true; }
+    if (!code) { js(res, 400, { error: 'Напишите код восстановления' }); return true; }
+    if (pass.length < 6) { js(res, 400, { error: 'Новый пароль от 6 символов' }); return true; }
+    const r = await getPool().query('select * from nx_mail_users where handle = $1', [handle]);
+    const u = r.rows[0];
+    if (!u) { js(res, 404, { error: 'Адреса ' + handle + '@' + D + ' нет' }); return true; }
+    if (!u.rcode) { js(res, 403, { error: 'У этого адреса нет кода восстановления. Зайди в настройки и создай его' }); return true; }
+    if (rcnorm(u.rcode) !== code) { js(res, 403, { error: 'Код не подошёл' }); return true; }
+    await getPool().query('update nx_mail_users set pass = $1, via = $2 where id = $3', [hp(pass), 'pass', u.id]);
+    await getPool().query('delete from nx_mail_tokens where user_id = $1', [u.id]);
+    js(res, 200, { ok: true });
+    return true;
+  }
+
+  const me = await authUser(req);
+  if (!me) { js(res, 401, { error: 'Нужно войти' }); return true; }
+
+  /* код восстановления: посмотреть и перевыпустить */
+  if (p === '/api/rcode') {
+    let code = me.rcode || '';
+    if (req.method === 'POST' || !code) {
+      code = rc();
+      await getPool().query('update nx_mail_users set rcode = $1 where id = $2', [code, me.id]);
+    }
+    js(res, 200, { code });
+    return true;
+                                    }  /* удалить аккаунт навсегда */
+  if (p === '/api/account/delete' && req.method === 'POST') {
+    const b = await rb(req);
+    const pass = String(b.password || '');
+    const code = rcnorm(b.code);
+    const byPass = !!me.pass && !!pass && cp(pass, me.pass);
+    const byCode = !!me.rcode && !!code && rcnorm(me.rcode) === code;
+    if (!byPass && !byCode) { js(res, 403, { error: 'Введите пароль или код восстановления' }); return true; }
+    const q = (sql, a) => getPool().query(sql, a || [me.id]);
+    await q('delete from nx_mail_letters where from_h = $1 or to_h = $1', [me.handle]);
+    await q('delete from nx_mail_flags where user_id = $1');
+    await q('delete from nx_mail_reads where user_id = $1');
+    await q('delete from nx_mail_drafts where user_id = $1');
+    await q('delete from nx_mail_tokens where user_id = $1');
+    await q('delete from nx_mail_prefs where user_id = $1');
+    await q('delete from nx_mail_blocks where user_id = $1');
+    await q('delete from nx_mail_users where id = $1');
+    js(res, 200, { ok: true });
+    return true;
+  }
+
+  /* тема оформления */
+  if (p === '/api/prefs') {
+    if (req.method === 'GET') {
+      const r = await getPool().query('select theme from nx_mail_prefs where user_id = $1', [me.id]);
+      return js(res, 200, {
+        theme: (r.rows[0] || {}).theme || 'dark',
+        blocks: await blocksOf(me.id)
+      }), true;
+    }
+    if (req.method === 'POST') {
+      const b = await rb(req);
+      const theme = b.theme === 'light' ? 'light' : 'dark';
+      await getPool().query(
+        `insert into nx_mail_prefs (user_id, theme) values ($1,$2)
+         on conflict (user_id) do update set theme = $2`, [me.id, theme]);
+      js(res, 200, { ok: true, theme });
+      return true;
+    }
+  }
+
+  /* смена пароля */
+  if (p === '/api/password' && req.method === 'POST') {
+    const b = await rb(req);
+    const oldPass = String(b.old || '');
+    const pass = String(b.new || '');
+    if (pass.length < 6) { js(res, 400, { error: 'Новый пароль от 6 символов' }); return true; }
+    if (me.via === 'nevix') {
+      js(res, 400, { error: 'Этот адрес входит через мессенджер NEVIX — пароль там и меняется' });
+      return true;
+    }
+    if (!me.pass || !cp(oldPass, me.pass)) { js(res, 403, { error: 'Старый пароль не подошёл' }); return true; }
+    await getPool().query('update nx_mail_users set pass = $1, via = $2 where id = $3', [hp(pass), 'pass', me.id]);
+    /* остальные устройства выходят, текущее остаётся */
+    const h = String(req.headers.authorization || '');
+    const now = h.startsWith('Bearer ') ? h.slice(7).trim() : '';
+    await getPool().query('delete from nx_mail_tokens where user_id = $1 and token <> $2', [me.id, now]);
+    js(res, 200, { ok: true });
+    return true;
+  }
+
+  /* чёрный список */
+  if (p === '/api/blocks') {
+    if (req.method === 'GET') {
+      js(res, 200, { blocks: await blocksOf(me.id) });
+      return true;
+    }
+    if (req.method === 'POST') {
+      const b = await rb(req);
+      const raw = String(b.addr || '').trim().toLowerCase();
+      if (!raw) { js(res, 400, { error: 'Напишите адрес' }); return true; }
+      const addr = raw.includes('@') ? raw : cl(raw) + '@' + D;
+      const local = addr.endsWith('@' + D) ? addr.slice(0, -(D.length + 1)) : '';
+      const okLocal = local && HRE.test(local);
+      if (!okLocal && !ERE.test(addr)) { js(res, 400, { error: 'Проверьте адрес' }); return true; }
+      if (addr === me.handle + '@' + D) { js(res, 400, { error: 'Свой адрес блокировать не нужно' }); return true; }
+      await getPool().query(
+        'insert into nx_mail_blocks (user_id, addr) values ($1,$2) on conflict do nothing', [me.id, addr]);
+      js(res, 200, { ok: true, addr, blocks: await blocksOf(me.id) });
+      return true;
+    }
+  }
+
+  const mBlock = p.match(/^\/api\/blocks\/([^/]+)$/);
+  if (mBlock && req.method === 'DELETE') {
+    const addr = decodeURIComponent(mBlock[1]).toLowerCase();
+    await getPool().query('delete from nx_mail_blocks where user_id = $1 and addr = $2', [me.id, addr]);
+    js(res, 200, { ok: true, blocks: await blocksOf(me.id) });
+    return true;
+  }
+
+  /* отметить письмо прочитанным (свайп вправо) */
+  const mRead = p.match(/^\/api\/mail\/([^/]+)\/read$/);
+  if (mRead && req.method === 'POST') {
+    const id = decodeURIComponent(mRead[1]);
+    const r = await getPool().query('select from_h, to_h from nx_mail_letters where id = $1', [id]);
+    const l = r.rows[0];
+    if (!l) { js(res, 404, { error: 'Письмо не найдено' }); return true; }
+    if (l.to_h !== me.handle) { js(res, 403, { error: 'Это не входящее письмо' }); return true; }
+    await getPool().query('insert into nx_mail_reads (letter_id, user_id) values ($1,$2) on conflict do nothing', [id, me.id]);
+    js(res, 200, { ok: true });
+    return true;
+  }
+
+  js(res, 404, { error: 'Нет такого адреса' });
+  return true;
+}
+
+function setPool(p) { pool = p; }
+
+module.exports = {
+  http, fs, path, crypto, URL, PORT, ROOT, D, CHAT, MEM, getPool, setPool, makePool,
+  RESEND, RESEND_URL, BREVO, BREVO_URL, FROM, FROM_NAME, OUT_KIND, OUT_READY,
+  nid, ntok, HRE, ERE, cl, nickFrom, hp, cp, js, rb, SCHEMA,
+  userJson, authUser, whoInNevix, userForNevix, giveToken, boxSql, tryRoute
+};
