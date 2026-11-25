@@ -115,7 +115,142 @@ async function makePool() {
     const { newDb } = require('pg-mem');
     const pg = newDb().adapters.createPg();
     return new pg.Pool();
+  }= d.user || d;
+    if (!u || !u.id) return null;
+    return { id: String(u.id), handle: cl(u.username || ''), name: String(u.name || '') };
+  } catch (e) {
+    console.log('[mail] мессенджер не ответил: ' + e.message);
+    return null;
   }
+}
+
+async function userForNevix(who) {
+  let r = await getPool().query('select * from nx_mail_users where nevix_id = $1', [who.id]);
+  let u = r.rows[0];
+  if (!u && who.handle) {
+    r = await getPool().query('select * from nx_mail_users where handle = $1', [who.handle]);
+    u = r.rows[0];
+    if (u && !u.nevix_id) await getPool().query('update nx_mail_users set nevix_id = $1 where id = $2', [who.id, u.id]);
+  }
+  if (u) return u;
+  /* ника может не быть — тогда берём имя (Игорь → igor), иначе номер аккаунта */
+  let handle = '';
+  if (who.handle && HRE.test(who.handle)) {
+    handle = who.handle;
+  } else {
+    const fromName = nickFrom(who.name || who.handle || '');
+    if (fromName.length >= 3 && HRE.test(fromName)) handle = fromName;
+  }
+  if (!handle) handle = 'user' + String(who.id).replace(/[^a-z0-9]/gi, '').slice(-8).toLowerCase();
+  if (!HRE.test(handle)) handle = 'user' + crypto.randomBytes(3).toString('hex');
+  const busy = await getPool().query('select 1 from nx_mail_users where handle = $1', [handle]);
+  if (busy.rowCount) handle = handle.slice(0, 12) + crypto.randomBytes(2).toString('hex');
+  const id = nid('u');
+  await getPool().query('insert into nx_mail_users (id, handle, pass, via, nevix_id) values ($1,$2,$3,$4,$5)',
+    [id, handle, '', 'nevix', who.id]);
+  r = await getPool().query('select * from nx_mail_users where id = $1', [id]);
+  return r.rows[0];
+}
+
+async function giveToken(res, u, code) {
+  const token = ntok();
+  await getPool().query('insert into nx_mail_tokens (token, user_id) values ($1,$2)', [token, u.id]);
+  /* код восстановления: выдаём один раз и запоминаем */
+  let rcode = u.rcode || '';
+  if (!rcode) {
+    rcode = rc();
+    try { await getPool().query('update nx_mail_users set rcode = $1 where id = $2', [rcode, u.id]); }
+    catch (e) { rcode = ''; }
+  }
+  return js(res, code, { token, user: userJson(u), rcode });
+}
+
+/* ── отправка наружу (gmail и другие) ── */
+const outCount = new Map();
+
+function outLimit(handle) {
+  const now = Date.now();
+  const row = outCount.get(handle) || { n: 0, t: now };
+  if (now - row.t > 3600000) { row.n = 0; row.t = now; }
+  if (row.n >= 30) return false;
+  row.n++;
+  outCount.set(handle, row);
+  return true;
+}
+
+async function sendOutside(to, subj, body) {
+  if (!OUT_READY) {
+    const e = new Error('Отправка на другие адреса ещё не настроена. Пока письма ходят только между адресами Nevix.');
+    e.code = 'NOOUT';
+    throw e;
+  }
+  const safe = String(body).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const html = '<div style="font-family:sans-serif;font-size:16px;white-space:pre-wrap">' + safe + '</div>';
+
+  const req = OUT_KIND === 'resend'
+    ? {
+        url: RESEND_URL + '/emails',
+        headers: { authorization: 'Bearer ' + RESEND, 'content-type': 'application/json' },
+        body: { from: FROM_NAME + ' <' + FROM + '>', to: [to], subject: subj || '(без темы)', text: body, html }
+      }
+    : {
+        url: BREVO_URL + '/v3/smtp/email',
+        headers: { 'api-key': BREVO, 'content-type': 'application/json' },
+        body: {
+          sender: { name: FROM_NAME, email: FROM },
+          to: [{ email: to }],
+          subject: subj || '(без темы)',
+          textContent: body,
+          htmlContent: html
+        }
+      };
+
+  const r = await fetch(req.url, { method: 'POST', headers: req.headers, body: JSON.stringify(req.body) });
+  if (!r.ok) {
+    let msg = '';
+    try {
+      const d = await r.json();
+      msg = d.message || d.error || (d.errors && d.errors[0] && d.errors[0].message) || '';
+    } catch (e) {}
+    const err = new Error(
+      'Почтовый сервис не принял письмо' + (msg ? ': ' + msg : ' (код ' + r.status + ')') +
+      (r.status === 403 ? '. Пока свой домен не подключён, отправлять можно только на свою почту.' : '')
+    );
+    err.code = 'OUT' + r.status;
+    throw err;
+  }
+  return true;
+}
+
+/* ── папки ── */
+function boxSql(box) {
+  if (box === 'sent') return 'l.from_h = $1 and f.flag is null';
+  if (box === 'trash') return "(l.from_h = $1 or l.to_h = $1) and f.flag = 'trash'";
+  if (box === 'spam') return "l.to_h = $1 and f.flag = 'spam'";
+  return 'l.to_h = $1 and f.flag is null';
+}
+
+/* ── добавочные адреса: тема, пароль, чёрный список, «прочитано» ── */
+
+let booted = null;
+function ensure() {
+  if (booted) return booted;
+  booted = (async () => {
+    await getPool().query(
+      `create table if not exists nx_mail_prefs (user_id text primary key,
+         theme text not null default 'dark')`);
+    await getPool().query(
+      `create table if not exists nx_mail_blocks (user_id text not null, addr text not null,
+         created timestamptz not null default now(), primary key (user_id, addr))`);
+    try { await getPool().query('alter table nx_mail_users add column if not exists rcode text'); } catch (e) {}
+  })().catch((e) => { booted = null; throw e; });
+  return booted;
+}
+
+const MINE = (p) =>
+  p === '/api/prefs' || p === '/api/password' || p === '/api/blocks' ||
+  p === '/api/recover' || p === '/api/rcode' || p === '/api/account/delete' ||
+  p.startsWith('/api/blocks/') || /^\/api\/mail\/[^/]+\/read$/.test(p);
   if (!process.env.DATABASE_URL) return null;
   return new Pool({
     connectionString: process.env.DATABASE_URL,
