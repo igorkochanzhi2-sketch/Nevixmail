@@ -209,3 +209,6 @@ body {
 .f input::placeholder { color: #6b6b7a; }
 .scr .f .m { font-size: 15px; }
 #to ~ span.m { display: none; }
+h1 { font-size: 26px; line-height: 1.15; margin: 0; }
+.f h1 { font-size: 20px; }
+.i.a { background: var(--grad); border: 0; color: #fff; box-shadow: 0 10px 24px -16px var(--ac); }
