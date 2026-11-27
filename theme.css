@@ -195,4 +195,17 @@ body {
 @media (max-width: 400px) {
   .scr { padding: 16px 15px 12px; }
   .item .it .s { font-size: 13.5px; }
-}
+}/* ══ исправления v6.2 ══ */
+.b, .b.g { flex: none; }
+.scr > .b:last-child { margin-bottom: 0; }
+.scr > .b:empty, .scr > .b.g:empty { display: none; }
+
+#pill + .i + .i { display: none; }
+.r > div > .i:last-child:nth-child(n+4) { display: none; }
+
+.chip { background: var(--chip-on); border-color: rgba(214, 40, 63, 0.45); color: var(--at); font-weight: 700; }
+.chip.on { background: var(--grad); border-color: transparent; color: #fff; }
+
+.f input::placeholder { color: #6b6b7a; }
+.scr .f .m { font-size: 15px; }
+#to ~ span.m { display: none; }
