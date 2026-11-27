@@ -212,3 +212,6 @@ body {
 h1 { font-size: 26px; line-height: 1.15; margin: 0; }
 .f h1 { font-size: 20px; }
 .i.a { background: var(--grad); border: 0; color: #fff; box-shadow: 0 10px 24px -16px var(--ac); }
+/* ══ убираем дубли, которые дописывает more.js ══ */
+button[data-forgot],
+button[data-refresh] { display: none !important; }
